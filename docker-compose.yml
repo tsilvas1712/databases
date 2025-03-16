@@ -7,48 +7,48 @@ services:
         container_name: dabase-mysql
         image: mysql:latest
         restart: always
-        environment: 
+        environment:
             MYSQL_ROOT_PASSWORD: 'root'
-        volumes: 
+        volumes:
             - ./.docker/mysql/dbdata:/var/lib/mysql
-        ports: 
+        ports:
             - "3306:3306"
-   
+
     # db pgsql
     pgsql:
         container_name: dabase-pg
         image: postgres:latest
         restart: always
-        
-        environment: 
-            POSTGRES_PASSWORD: 'postgres'
-        volumes: 
-            - ./.docker/postgres/dbdata:/var/lib/postgresql/data/pgdata
-        ports: 
-            - "5433:5432"
 
-  # db mongo
+        environment:
+            POSTGRES_PASSWORD: 'postgres'
+        volumes:
+            - .docker/postgres:/var/lib/postgresql/data
+        ports:
+            - "5432:5432"
+
+    # db mongo
     mongo:
         container_name: database-mongo
         image: mongo:latest
         restart: always
-        ports: 
+        ports:
             - "27017:27017"
-        volumes: 
+        volumes:
             - ./.docker/mongo/dbdata:/data/db
 
-  # mailhog
+    # mailhog
     mailhog:
         container_name: mailhog
         image: mailhog/mailhog:latest
-        ports: 
+        ports:
             - "8025:8025"
             - "1025:1025"
-      
+
     # redis
     redis:
         container_name: database-redis
         image: redis:latest
         restart: always
-        ports: 
+        ports:
             - "6379:6379"
