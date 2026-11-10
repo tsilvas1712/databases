@@ -1,79 +1,155 @@
-version: "3.7"
+# Bancos e serviços de desenvolvimento.
+#
+# Por padrão sobe só o essencial (MySQL, Redis e Mailpit). O resto fica em
+# perfis e só sobe quando pedido:
+#
+#   docker compose up -d                       MySQL, Redis e Mailpit
+#   docker compose --profile pgsql up -d       + PostgreSQL
+#   docker compose --profile mongo up -d       + MongoDB
+#   docker compose --profile rabbitmq up -d    + RabbitMQ
+#   docker compose --profile kafka up -d       + Kafka e Kafka UI
+#   docker compose --profile all up -d         tudo
+#   docker compose --profile all stop          para tudo (os dados ficam nos volumes)
+#
+# Os limites de memória (mem_limit) e os ajustes de cada serviço são para
+# desenvolvimento: menos cache e nada de recursos de produção (binlog,
+# performance_schema, persistência do Redis).
+#
+# As portas escutam só em 127.0.0.1: os serviços não ficam expostos na rede
+# (Wi-Fi do café, por exemplo) com as senhas padrão.
+
+name: databases
+
+# Logs limitados a 2 arquivos de 10 MB por container
+x-logging: &logging
+    driver: json-file
+    options:
+        max-size: "10m"
+        max-file: "2"
 
 services:
 
-    # db mysql
+    # MySQL na mesma versão da produção (8.4 LTS), para os dumps baterem
     mysql:
         container_name: dabase-mysql
-        image: mysql:latest
-        restart: always
+        image: mysql:8.4
+        restart: unless-stopped
         environment:
             MYSQL_ROOT_PASSWORD: 'root'
+        command:
+            # Sozinho, o performance_schema reserva algumas centenas de MB
+            - --performance-schema=OFF
+            - --innodb-buffer-pool-size=512M
+            - --innodb-log-buffer-size=16M
+            - --max-connections=100
+            - --skip-name-resolve
+            # Sem replicação: o binlog só gastaria disco e escrita
+            - --disable-log-bin
+            # Grava o log no disco a cada segundo, e não a cada commit: importar
+            # um dump fica muito mais rápido. Num crash perde-se no máximo 1 s.
+            - --innodb-flush-log-at-trx-commit=2
         volumes:
             - mysqlData:/var/lib/mysql
         ports:
-            - "3306:3306"
+            - "127.0.0.1:3306:3306"
+        mem_limit: 1g
+        logging: *logging
 
-    # db pgsql
+    # Redis só em memória: cache, filas e sessões somem ao reiniciar o container
+    redis:
+        container_name: database-redis
+        image: redis:8-alpine
+        restart: unless-stopped
+        command:
+            - redis-server
+            - --maxmemory
+            - 256mb
+            # Cheio, o Redis recusa escritas em vez de descartar jobs das filas
+            - --maxmemory-policy
+            - noeviction
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+        ports:
+            - "127.0.0.1:6379:6379"
+        mem_limit: 320m
+        logging: *logging
+
+    # Mailpit: substitui o MailHog, que foi abandonado. Mesmas portas: 1025 (SMTP)
+    # e http://localhost:8025 (caixa de entrada)
+    mailpit:
+        container_name: mailpit
+        image: axllent/mailpit:v1
+        restart: unless-stopped
+        environment:
+            MP_MAX_MESSAGES: 500
+        ports:
+            - "127.0.0.1:8025:8025"
+            - "127.0.0.1:1025:1025"
+        mem_limit: 128m
+        logging: *logging
+
     pgsql:
         container_name: dabase-pg
         image: postgres:16-alpine
-        restart: always
-
+        profiles: [pgsql, all]
         environment:
             POSTGRES_PASSWORD: 'postgres'
+        command:
+            - postgres
+            - -c
+            - shared_buffers=128MB
+            - -c
+            - max_connections=50
+            - -c
+            - work_mem=8MB
         volumes:
             - postgresData:/var/lib/postgresql/data
         ports:
-            - "5432:5432"
+            - "127.0.0.1:5432:5432"
+        mem_limit: 512m
+        logging: *logging
 
-    # db mongo
+    # Sem limite, o cache do WiredTiger usa metade da RAM do container
     mongo:
         container_name: database-mongo
-        image: mongo:latest
-        restart: always
-        ports:
-            - "27017:27017"
+        image: mongo:9.0
+        profiles: [mongo, all]
+        command: ["--wiredTigerCacheSizeGB", "0.25"]
         volumes:
             - mongoData:/data/db
-
-    # mailhog
-    mailhog:
-        container_name: mailhog
-        image: mailhog/mailhog:latest
         ports:
-            - "8025:8025"
-            - "1025:1025"
+            - "127.0.0.1:27017:27017"
+        mem_limit: 768m
+        logging: *logging
 
-    # redis
-    redis:
-        container_name: database-redis
-        image: redis:latest
-        restart: always
-        ports:
-            - "6379:6379"
-
-    # rabbitmq
     rabbitmq:
         container_name: database-rabbitmq
-        image: rabbitmq:3-management-alpine
-        restart: always
+        image: rabbitmq:3.13-management-alpine
+        profiles: [rabbitmq, all]
         environment:
             RABBITMQ_DEFAULT_USER: rabbitmq
             RABBITMQ_DEFAULT_PASS: rabbitmq
+            # Uma thread de scheduler e sem busy-wait: o Erlang para de gastar CPU
+            # quando a fila está parada, o normal em desenvolvimento
+            RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: "+S 1:1 +sbwt none +sbwtdcpu none +sbwtdio none"
         ports:
-            - "5672:5672"   # AMQP
-            - "15672:15672" # Management UI
+            - "127.0.0.1:5672:5672"   # AMQP
+            - "127.0.0.1:15672:15672" # Management UI
         volumes:
             - rabbitmqData:/var/lib/rabbitmq
+        mem_limit: 512m
+        logging: *logging
 
-    # kafka (KRaft — sem Zookeeper)
+    # Kafka (KRaft, sem Zookeeper). A JVM reservaria 1 GB de heap por padrão.
     kafka:
         container_name: database-kafka
-        image: apache/kafka:latest
+        image: apache/kafka:4.3.1
         hostname: kafka
-        restart: always
+        profiles: [kafka, all]
         environment:
+            KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
             KAFKA_NODE_ID: 1
             KAFKA_PROCESS_ROLES: broker,controller
             KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
@@ -89,27 +165,32 @@ services:
             KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
             KAFKA_LOG_DIRS: /var/lib/kafka/data
         ports:
-            - "9094:9094"
+            - "127.0.0.1:9094:9094"
         volumes:
             - kafkaData:/var/lib/kafka/data
+        mem_limit: 768m
+        logging: *logging
 
-    # kafka ui
+    # http://localhost:8090
     kafka-ui:
         container_name: kafka-ui
-        image: provectuslabs/kafka-ui:latest
-        restart: always
+        image: provectuslabs/kafka-ui:v0.7.2
+        profiles: [kafka, all]
         depends_on:
             - kafka
-        ports:
-            - "8090:8080"
         environment:
+            JAVA_OPTS: "-Xms64m -Xmx192m"
             KAFKA_CLUSTERS_0_NAME: local
             KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:19092
+        ports:
+            - "127.0.0.1:8090:8080"
+        # O heap é de 192 MB, mas a JVM gasta outro tanto fora dele
+        mem_limit: 512m
+        logging: *logging
 
 volumes:
     postgresData:
     mysqlData:
-    redisData:
     mongoData:
     rabbitmqData:
     kafkaData:
