@@ -1,0 +1,51 @@
+# Ajustes do MySQL para desenvolvimento, montado em /etc/mysql/conf.d.
+# Prioridade: pouca memória e restore rápido de dumps grandes. Nada aqui
+# serve para produção.
+
+[mysqld]
+# --- Memória ---------------------------------------------------------------
+# Sozinho, o performance_schema reserva algumas centenas de MB
+performance_schema             = OFF
+# Cache de dados e índices: o que mais acelera o restore. Cabe no mem_limit
+# de 1.5 GB do container junto com os buffers por conexão.
+innodb_buffer_pool_size        = 1G
+innodb_buffer_pool_instances   = 1
+max_connections                = 100
+skip_name_resolve              = ON
+# Não guarda os dados duas vezes (no buffer pool e no cache de disco do Linux)
+innodb_flush_method            = O_DIRECT
+
+# --- Restore de dumps grandes ----------------------------------------------
+# Linhas e INSERTs gigantes (BLOBs, extended inserts do mysqldump). O padrão
+# de 64 MB derruba o restore com "Got a packet bigger than max_allowed_packet".
+max_allowed_packet             = 1G
+# Restores longos não caem por timeout
+net_read_timeout               = 600
+net_write_timeout              = 600
+wait_timeout                   = 28800
+# Transações grandes ficam no buffer em vez de irem ao disco a cada pedaço
+innodb_log_buffer_size         = 64M
+# Redo log maior: o InnoDB faz menos checkpoints no meio do import.
+# Ocupa só disco (2 GB no volume), não memória.
+innodb_redo_log_capacity       = 2G
+# Sem replicação: o binlog só gastaria disco e escrita
+disable_log_bin
+# Grava o log no disco a cada segundo, e não a cada commit. Num crash perde-se
+# no máximo 1 s, aceitável em desenvolvimento.
+innodb_flush_log_at_trx_commit = 2
+# O doublewrite protege contra páginas meio gravadas num crash; desligado, a
+# escrita no disco cai quase pela metade durante o import
+innodb_doublewrite             = OFF
+# SSD: deixa o InnoDB gravar no ritmo que o disco aguenta
+innodb_io_capacity             = 2000
+innodb_io_capacity_max         = 4000
+# Criação de índices (ALTER/CREATE INDEX no fim do dump) mais rápida
+innodb_sort_buffer_size        = 64M
+innodb_ddl_threads             = 4
+
+# Clientes rodando dentro do container (docker exec ... mysql)
+[mysql]
+max_allowed_packet             = 1G
+
+[mysqldump]
+max_allowed_packet             = 1G
